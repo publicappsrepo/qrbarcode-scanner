@@ -1,0 +1,292 @@
+/*
+ * QR & Barcode Scanner
+ * Based on QrCraft by K M Rejowan Ahmmed
+ * https://github.com/ahmmedrejowan/QrCraft
+ *
+ * Original Copyright (C) 2025 K M Rejowan Ahmmed
+ * Modifications Copyright (C) 2025 Appease
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+package com.appsease.qrbarcode.presentation.history
+
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.PrimaryTabRow
+import androidx.compose.material3.Tab
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.navigation.NavController
+import com.appsease.qrbarcode.presentation.history.components.FilterChips
+import com.appsease.qrbarcode.presentation.history.components.HistoryItem
+import com.appsease.qrbarcode.presentation.history.components.SearchBar
+import com.appsease.qrbarcode.presentation.history.state.HistoryEvent
+import com.appsease.qrbarcode.presentation.history.state.HistoryItemData
+import com.appsease.qrbarcode.presentation.history.state.HistoryTab
+import com.appsease.qrbarcode.presentation.navigation.Screen
+import org.koin.androidx.compose.koinViewModel
+
+@Composable
+fun HistoryScreen(
+    navController: NavController,
+    viewModel: HistoryViewModel = koinViewModel(),
+    modifier: Modifier = Modifier
+) {
+    val state by viewModel.state.collectAsState()
+
+    Box(
+        modifier = modifier.fillMaxSize()
+    ) {
+        Column(
+            modifier = Modifier.fillMaxSize()
+        ) {
+            // Title
+            Text(
+                text = "History",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp)
+            )
+
+            // Tabs (Reordered: All, Generated, Scanned)
+            PrimaryTabRow(
+                selectedTabIndex = when (state.selectedTab) {
+                    HistoryTab.ALL -> 0
+                    HistoryTab.GENERATED -> 1
+                    HistoryTab.SCANNED -> 2
+                }
+            ) {
+                Tab(
+                    selected = state.selectedTab == HistoryTab.ALL,
+                    onClick = {
+                        viewModel.onEvent(HistoryEvent.OnTabSelected(HistoryTab.ALL))
+                    },
+                    text = { Text("All") },
+                    modifier = Modifier.height(48.dp)
+                )
+                Tab(
+                    selected = state.selectedTab == HistoryTab.GENERATED,
+                    onClick = {
+                        viewModel.onEvent(HistoryEvent.OnTabSelected(HistoryTab.GENERATED))
+                    },
+                    text = { Text("Generated") },
+                    modifier = Modifier.height(48.dp)
+                )
+                Tab(
+                    selected = state.selectedTab == HistoryTab.SCANNED,
+                    onClick = {
+                        viewModel.onEvent(HistoryEvent.OnTabSelected(HistoryTab.SCANNED))
+                    },
+                    text = { Text("Scanned") },
+                    modifier = Modifier.height(48.dp)
+                )
+            }
+
+            // Search bar
+            SearchBar(
+                query = state.searchQuery,
+                onQueryChange = { query ->
+                    viewModel.onEvent(HistoryEvent.OnSearchQueryChanged(query))
+                }
+            )
+
+            // Filter chips
+            FilterChips(
+                selectedFilter = state.selectedFilter,
+                onFilterSelected = { filter ->
+                    viewModel.onEvent(HistoryEvent.OnFilterSelected(filter))
+                }
+            )
+
+            // History list
+            when (state.selectedTab) {
+                HistoryTab.ALL -> {
+                    if (state.combinedHistory.isEmpty()) {
+                        EmptyState("No history yet")
+                    } else {
+                        LazyColumn(
+                            contentPadding = PaddingValues(16.dp),
+                            modifier = Modifier.fillMaxSize()
+                        ) {
+                            items(
+                                items = state.combinedHistory,
+                                key = { "${it.type.name}_${it.id}" }
+                            ) { item ->
+                                when (item) {
+                                    is HistoryItemData.Scanned -> {
+                                        HistoryItem(
+                                            title = null,
+                                            content = item.data.content,
+                                            contentType = item.data.contentType.name,
+                                            format = item.data.format.name,
+                                            timestamp = item.data.timestamp,
+                                            isFavorite = item.data.isFavorite,
+                                            tag = "Scanned",
+                                            onClicked = {
+                                                navController.navigate(
+                                                    Screen.ScanHistoryDetail(scanId = item.id)
+                                                )
+                                            },
+                                            onToggleFavorite = {
+                                                viewModel.onEvent(
+                                                    HistoryEvent.OnToggleFavorite(
+                                                        item.id,
+                                                        !item.data.isFavorite
+                                                    )
+                                                )
+                                            },
+                                            modifier = Modifier.padding(bottom = 12.dp)
+                                        )
+                                    }
+                                    is HistoryItemData.Generated -> {
+                                        HistoryItem(
+                                            title = item.data.title,
+                                            content = item.data.formattedContent,
+                                            contentType = item.data.templateName,
+                                            format = item.data.barcodeFormat.name,
+                                            timestamp = item.data.createdAt,
+                                            isFavorite = item.data.isFavorite,
+                                            tag = "Generated",
+                                            onClicked = {
+                                                navController.navigate(
+                                                    Screen.CodeDetails(codeId = item.id)
+                                                )
+                                            },
+                                            onToggleFavorite = {
+                                                viewModel.onEvent(
+                                                    HistoryEvent.OnToggleFavorite(
+                                                        item.id,
+                                                        !item.data.isFavorite
+                                                    )
+                                                )
+                                            },
+                                            modifier = Modifier.padding(bottom = 12.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                HistoryTab.SCANNED -> {
+                    if (state.scannedHistory.isEmpty()) {
+                        EmptyState("No scanned codes yet")
+                    } else {
+                        LazyColumn(
+                            contentPadding = PaddingValues(16.dp),
+                            modifier = Modifier.fillMaxSize()
+                        ) {
+                            items(
+                                items = state.scannedHistory,
+                                key = { it.id }
+                            ) { item ->
+                                HistoryItem(
+                                    title = null,
+                                    content = item.content,
+                                    contentType = item.contentType.name,
+                                    format = item.format.name,
+                                    timestamp = item.timestamp,
+                                    isFavorite = item.isFavorite,
+                                    onClicked = {
+                                        navController.navigate(
+                                            Screen.ScanHistoryDetail(scanId = item.id)
+                                        )
+                                    },
+                                    onToggleFavorite = {
+                                        viewModel.onEvent(
+                                            HistoryEvent.OnToggleFavorite(
+                                                item.id,
+                                                !item.isFavorite
+                                            )
+                                        )
+                                    },
+                                    modifier = Modifier.padding(bottom = 12.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                HistoryTab.GENERATED -> {
+                    if (state.generatedHistory.isEmpty()) {
+                        EmptyState("No generated codes yet")
+                    } else {
+                        LazyColumn(
+                            contentPadding = PaddingValues(16.dp),
+                            modifier = Modifier.fillMaxSize()
+                        ) {
+                            items(
+                                items = state.generatedHistory,
+                                key = { it.id }
+                            ) { item ->
+                                HistoryItem(
+                                    title = item.title,
+                                    content = item.formattedContent,
+                                    contentType = item.templateName,
+                                    format = item.barcodeFormat.name,
+                                    timestamp = item.createdAt,
+                                    isFavorite = item.isFavorite,
+                                    onClicked = {
+                                        navController.navigate(
+                                            Screen.CodeDetails(codeId = item.id)
+                                        )
+                                    },
+                                    onToggleFavorite = {
+                                        viewModel.onEvent(
+                                            HistoryEvent.OnToggleFavorite(
+                                                item.id,
+                                                !item.isFavorite
+                                            )
+                                        )
+                                    },
+                                    modifier = Modifier.padding(bottom = 12.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EmptyState(message: String) {
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = message,
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}

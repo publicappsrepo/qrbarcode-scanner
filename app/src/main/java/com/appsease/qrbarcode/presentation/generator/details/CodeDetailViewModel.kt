@@ -1,0 +1,322 @@
+/*
+ * QR & Barcode Scanner
+ * Based on QrCraft by K M Rejowan Ahmmed
+ * https://github.com/ahmmedrejowan/QrCraft
+ *
+ * Original Copyright (C) 2025 K M Rejowan Ahmmed
+ * Modifications Copyright (C) 2025 Appease
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+package com.appsease.qrbarcode.presentation.generator.details
+
+import android.content.Context
+import android.graphics.Bitmap
+import android.net.Uri
+import androidx.core.content.FileProvider
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.appsease.qrbarcode.domain.models.CodeCustomization
+import com.appsease.qrbarcode.domain.repository.GeneratorRepository
+import com.appsease.qrbarcode.utils.generator.CodeGenerator
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import timber.log.Timber
+import java.io.File
+import java.io.FileOutputStream
+
+class CodeDetailViewModel(
+    private val context: Context,
+    private val generatorRepository: GeneratorRepository
+) : ViewModel() {
+
+    private val _state = MutableStateFlow(CodeDetailState())
+    val state: StateFlow<CodeDetailState> = _state.asStateFlow()
+
+    fun loadCode(codeId: Long) {
+        viewModelScope.launch {
+            _state.update { it.copy(isLoading = true, error = null) }
+
+            try {
+                val code = generatorRepository.getGeneratedById(codeId)
+                if (code != null) {
+                    // Regenerate bitmap from stored data
+                    val bitmap = generateBitmapFromCode(code)
+                    _state.update {
+                        it.copy(
+                            code = code,
+                            bitmap = bitmap,
+                            isLoading = false,
+                            error = if (bitmap == null) "Failed to generate QR code" else null
+                        )
+                    }
+                } else {
+                    _state.update {
+                        it.copy(
+                            isLoading = false,
+                            error = "Code not found"
+                        )
+                    }
+                }
+            } catch (e: Exception) {
+                Timber.e(e, "Failed to load code")
+                _state.update {
+                    it.copy(
+                        isLoading = false,
+                        error = "Failed to load code: ${e.message}"
+                    )
+                }
+            }
+        }
+    }
+
+    private suspend fun generateBitmapFromCode(code: com.appsease.qrbarcode.domain.models.GeneratedCodeData): Bitmap? {
+        return withContext(Dispatchers.IO) {
+            try {
+                val customization = CodeCustomization(
+                    foregroundColor = code.foregroundColor,
+                    backgroundColor = code.backgroundColor,
+                    size = code.size,
+                    errorCorrectionLevel = code.errorCorrection ?: com.appsease.qrbarcode.domain.models.ErrorCorrectionLevel.HIGH,
+                    margin = code.margin
+                )
+                CodeGenerator.generateCode(
+                    content = code.formattedContent,
+                    format = code.barcodeFormat,
+                    customization = customization
+                )
+            } catch (e: Exception) {
+                Timber.e(e, "Failed to generate bitmap from code")
+                null
+            }
+        }
+    }
+
+    fun toggleFavorite() {
+        val code = _state.value.code ?: return
+
+        viewModelScope.launch {
+            try {
+                val updatedCode = code.copy(
+                    isFavorite = !code.isFavorite,
+                    updatedAt = System.currentTimeMillis()
+                )
+                generatorRepository.updateGenerated(updatedCode)
+                _state.update {
+                    it.copy(
+                        code = updatedCode,
+                        successMessage = if (updatedCode.isFavorite) "Added to favorites" else "Removed from favorites"
+                    )
+                }
+            } catch (e: Exception) {
+                Timber.e(e, "Failed to toggle favorite")
+                _state.update {
+                    it.copy(errorMessage = "Failed to update favorite")
+                }
+            }
+        }
+    }
+
+    fun showDeleteDialog() {
+        _state.update { it.copy(showDeleteDialog = true) }
+    }
+
+    fun hideDeleteDialog() {
+        _state.update { it.copy(showDeleteDialog = false) }
+    }
+
+    suspend fun deleteCode(): Boolean {
+        val code = _state.value.code ?: return false
+
+        _state.update { it.copy(isDeleting = true, showDeleteDialog = false) }
+
+        return withContext(Dispatchers.IO) {
+            try {
+                // Delete from database
+                generatorRepository.deleteGenerated(code)
+                _state.update {
+                    it.copy(
+                        isDeleting = false,
+                        successMessage = "Code deleted successfully"
+                    )
+                }
+                Timber.d("Code deleted successfully")
+                true
+            } catch (e: Exception) {
+                Timber.e(e, "Failed to delete code")
+                _state.update {
+                    it.copy(
+                        isDeleting = false,
+                        errorMessage = "Failed to delete: ${e.message}"
+                    )
+                }
+                false
+            }
+        }
+    }
+
+    suspend fun getShareUri(): Uri? {
+        val bitmap = _state.value.bitmap
+
+        if (bitmap == null) {
+            _state.update { it.copy(errorMessage = "No image to share") }
+            return null
+        }
+
+        return withContext(Dispatchers.IO) {
+            try {
+                // Create temp file for sharing
+                val timestamp = System.currentTimeMillis()
+                val fileName = "share_qrcode_${timestamp}.png"
+                val shareDir = File(context.cacheDir, "shared")
+                shareDir.mkdirs()
+
+                val file = File(shareDir, fileName)
+                FileOutputStream(file).use { out ->
+                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+                }
+
+                // Get content URI using FileProvider
+                val uri = FileProvider.getUriForFile(
+                    context,
+                    "${context.packageName}.fileprovider",
+                    file
+                )
+                Timber.d("Share URI created successfully")
+                uri
+            } catch (e: Exception) {
+                Timber.e(e, "Failed to create share URI")
+                _state.update {
+                    it.copy(
+                        errorMessage = "Failed to share: ${e.message ?: "Unknown error"}"
+                    )
+                }
+                null
+            }
+        }
+    }
+
+    fun clearMessages() {
+        _state.update { it.copy(successMessage = null, errorMessage = null) }
+    }
+
+    fun showShareBottomSheet() {
+        _state.update { it.copy(showShareBottomSheet = true) }
+    }
+
+    fun hideShareBottomSheet() {
+        _state.update { it.copy(showShareBottomSheet = false) }
+    }
+
+
+    suspend fun saveToGallery(): Boolean {
+        val bitmap = _state.value.bitmap
+        val code = _state.value.code
+
+        if (bitmap == null || code == null) {
+            _state.update { it.copy(errorMessage = "No image to save") }
+            return false
+        }
+
+        _state.update { it.copy(isSavingToGallery = true, errorMessage = null) }
+
+        return withContext(Dispatchers.IO) {
+            try {
+                val filename = "QRBarcode_${code.title ?: "QRCode"}_${System.currentTimeMillis()}.png"
+
+                // For Android 10+ use MediaStore
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                    val contentValues = android.content.ContentValues().apply {
+                        put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, filename)
+                        put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "image/png")
+                        put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, android.os.Environment.DIRECTORY_PICTURES + "/QRBarcode")
+                    }
+
+                    val uri = context.contentResolver.insert(
+                        android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                        contentValues
+                    )
+
+                    uri?.let { imageUri ->
+                        context.contentResolver.openOutputStream(imageUri)?.use { outputStream ->
+                            bitmap.compress(Bitmap.CompressFormat.PNG, 100, outputStream)
+                        }
+                        _state.update {
+                            it.copy(
+                                isSavingToGallery = false,
+                                successMessage = "Saved to gallery"
+                            )
+                        }
+                        Timber.d("Image saved to gallery successfully")
+                        true
+                    } ?: run {
+                        _state.update {
+                            it.copy(
+                                isSavingToGallery = false,
+                                errorMessage = "Failed to save image"
+                            )
+                        }
+                        false
+                    }
+                } else {
+                    // For older Android versions
+                    _state.update {
+                        it.copy(
+                            isSavingToGallery = false,
+                            errorMessage = "Saving to gallery requires Android 10 or higher"
+                        )
+                    }
+                    false
+                }
+            } catch (e: Exception) {
+                Timber.e(e, "Failed to save image to gallery")
+                _state.update {
+                    it.copy(
+                        isSavingToGallery = false,
+                        errorMessage = "Failed to save: ${e.message}"
+                    )
+                }
+                false
+            }
+        }
+    }
+
+    fun copyContent() {
+        val code = _state.value.code ?: return
+
+        val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+        val clip = android.content.ClipData.newPlainText("QR Code Content", code.formattedContent)
+        clipboard.setPrimaryClip(clip)
+
+        _state.update {
+            it.copy(successMessage = "Content copied to clipboard")
+        }
+    }
+
+    suspend fun shareContent() {
+        val code = _state.value.code ?: return
+        _state.update { it.copy(showShareBottomSheet = false) }
+    }
+
+    suspend fun shareQRImage(): Uri? {
+        _state.update { it.copy(showShareBottomSheet = false) }
+        return getShareUri()
+    }
+}

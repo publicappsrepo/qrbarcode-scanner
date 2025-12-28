@@ -1,0 +1,705 @@
+/*
+ * QR & Barcode Scanner
+ * Based on QrCraft by K M Rejowan Ahmmed
+ * https://github.com/ahmmedrejowan/QrCraft
+ *
+ * Original Copyright (C) 2025 K M Rejowan Ahmmed
+ * Modifications Copyright (C) 2025 Appease
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+package com.appsease.qrbarcode.presentation.scanner.details
+
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
+import android.graphics.Bitmap
+import android.net.Uri
+import android.widget.Toast
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.MultiFormatWriter
+import com.google.zxing.common.BitMatrix
+import com.appsease.qrbarcode.domain.models.ContentType
+import com.appsease.qrbarcode.domain.models.ScanResult
+import java.text.SimpleDateFormat
+import java.util.*
+import androidx.core.graphics.createBitmap
+import androidx.core.graphics.set
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ScanDetailScreen(
+    scanResult: ScanResult,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+    autoSave: Boolean = true, // Auto-save for fresh scans, false for history items
+    viewModel: ScanHistoryDetailViewModel? = null // ViewModel for history items (with delete)
+) {
+    timber.log.Timber.tag("QC ScanDetailScree").d("composable - Composing with result: ${scanResult.displayValue}, type: ${scanResult.contentType}, autoSave: $autoSave")
+
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val viewModelState by (viewModel?.state?.collectAsState() ?: remember {
+        MutableStateFlow(ScanHistoryDetailState()).asStateFlow()
+    }.collectAsState())
+
+    // Get the singleton ScannerViewModel instance (not creating new instance with koinViewModel)
+    val scannerViewModel: com.appsease.qrbarcode.presentation.scanner.ScannerViewModel = org.koin.compose.koinInject()
+
+    // Reset scanner state immediately when entering detail screen (for fresh scans)
+    // This prepares the scanner for the next scan right away
+    if (autoSave) {
+        LaunchedEffect(Unit) {
+            timber.log.Timber.tag("QC ScanDetailScree").d("LaunchedEffect - Resetting scanner to Scanning (preparing for next scan)")
+            scannerViewModel.onEvent(com.appsease.qrbarcode.presentation.scanner.state.ScannerEvent.StartScanning)
+        }
+    }
+
+    // Auto-save to database in the background for fresh scans (not for history items)
+    if (autoSave) {
+        LaunchedEffect(scanResult) {
+            timber.log.Timber.tag("QC ScanDetailScree").d("LaunchedEffect - Auto-saving scan to database via ViewModel")
+            val savedId = scannerViewModel.saveToHistory(scanResult)
+            timber.log.Timber.tag("QC ScanDetailScree").d("LaunchedEffect - Scan saved with ID: $savedId")
+        }
+    }
+
+    // Handle device back button/gesture
+    BackHandler {
+        timber.log.Timber.tag("QC ScanDetailScree").d("BackHandler - Device back triggered")
+        onBack()
+    }
+
+    DisposableEffect(Unit) {
+        timber.log.Timber.tag("QC ScanDetailScree").d("DisposableEffect - Screen entered")
+        onDispose {
+            timber.log.Timber.tag("QC ScanDetailScree").d("DisposableEffect - Screen disposed")
+        }
+    }
+
+    // Delete confirmation dialog (only for history items)
+    if (viewModelState.showDeleteDialog) {
+        AlertDialog(
+            onDismissRequest = { viewModel?.hideDeleteDialog() },
+            title = { Text("Delete scan?") },
+            text = { Text("This action cannot be undone.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        scope.launch {
+                            val deleted = viewModel?.deleteScan() ?: false
+                            if (deleted) {
+                                onBack()
+                            }
+                        }
+                    }
+                ) {
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { viewModel?.hideDeleteDialog() }
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = {
+                    Text(
+                        text = scanResult.contentType.displayName,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back"
+                        )
+                    }
+                },
+                actions = {
+                    // Show delete button only for history items
+                    if (!autoSave && viewModel != null) {
+                        IconButton(onClick = {
+                            viewModel.showDeleteDialog()
+                        }) {
+                            Icon(
+                                imageVector = Icons.Default.Delete,
+                                contentDescription = "Delete",
+                                tint = MaterialTheme.colorScheme.error
+                            )
+                        }
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface
+                )
+            )
+        }
+    ) { paddingValues ->
+        Column(
+            modifier = modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            // QR Code Preview
+            val qrBitmap = remember(scanResult.rawValue) {
+                generateQRCode(scanResult.rawValue, scanResult.format)
+            }
+
+            if (qrBitmap != null) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(1f),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = Color.White
+                    )
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(24.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Image(
+                            bitmap = qrBitmap.asImageBitmap(),
+                            contentDescription = "QR Code",
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                }
+            }
+
+            // Content Display Card
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                )
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "Content",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = scanResult.displayValue,
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                }
+            }
+
+            // Always available actions: Copy and Share
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Button(
+                    onClick = {
+                        copyToClipboard(context, scanResult.displayValue)
+                        Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
+                    },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ContentCopy,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Copy")
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        shareContent(context, scanResult.displayValue)
+                    },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Share,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Share")
+                }
+            }
+
+            // Content-type specific actions
+            ContentSpecificActions(
+                scanResult = scanResult,
+                context = context
+            )
+
+            HorizontalDivider()
+
+            // Scan Information
+            InfoSection(title = "Scan Information") {
+                InfoRow(label = "Format", value = scanResult.format.displayName)
+                InfoRow(label = "Type", value = scanResult.contentType.displayName)
+                InfoRow(
+                    label = "Scanned",
+                    value = formatDate(scanResult.timestamp)
+                )
+            }
+
+            // Raw value (if different from display value)
+            if (scanResult.rawValue != scanResult.displayValue) {
+                InfoSection(title = "Raw Value") {
+                    Text(
+                        text = scanResult.rawValue,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+        }
+    }
+}
+
+@Composable
+private fun ContentSpecificActions(
+    scanResult: ScanResult,
+    context: Context,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        when (scanResult.contentType) {
+            ContentType.URL -> {
+                FilledTonalButton(
+                    onClick = { openUrl(context, scanResult.displayValue) },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.OpenInBrowser,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Open in Browser")
+                }
+            }
+
+            ContentType.EMAIL -> {
+                FilledTonalButton(
+                    onClick = { sendEmail(context, scanResult.displayValue) },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Email,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Send Email")
+                }
+            }
+
+            ContentType.PHONE -> {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    FilledTonalButton(
+                        onClick = { dialPhone(context, scanResult.displayValue) },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Call,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Call")
+                    }
+
+                    OutlinedButton(
+                        onClick = { sendSms(context, scanResult.displayValue) },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Sms,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("SMS")
+                    }
+                }
+            }
+
+            ContentType.SMS -> {
+                FilledTonalButton(
+                    onClick = { sendSms(context, scanResult.displayValue) },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Sms,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Send SMS")
+                }
+            }
+
+            ContentType.GEO -> {
+                FilledTonalButton(
+                    onClick = { openMap(context, scanResult.displayValue) },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Map,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Open in Maps")
+                }
+            }
+
+            ContentType.WIFI -> {
+                FilledTonalButton(
+                    onClick = {
+                        // WiFi connection would require additional permissions and handling
+                        Toast.makeText(context, "WiFi details copied to clipboard", Toast.LENGTH_SHORT).show()
+                        copyToClipboard(context, scanResult.displayValue)
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Wifi,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Copy WiFi Details")
+                }
+            }
+
+            ContentType.CONTACT -> {
+                FilledTonalButton(
+                    onClick = { addContact(context, scanResult.displayValue) },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.PersonAdd,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Add Contact")
+                }
+            }
+
+            ContentType.CALENDAR -> {
+                FilledTonalButton(
+                    onClick = { addCalendarEvent(context, scanResult.displayValue) },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Event,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Add to Calendar")
+                }
+            }
+
+            ContentType.PRODUCT -> {
+                FilledTonalButton(
+                    onClick = { searchProduct(context, scanResult.displayValue) },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Search,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Search Product")
+                }
+            }
+
+            else -> {
+                // No specific action for TEXT, CRYPTO, etc.
+                // Copy and Share are already available above
+            }
+        }
+    }
+}
+
+@Composable
+private fun InfoSection(
+    title: String,
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold
+        )
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+            )
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                content()
+            }
+        }
+    }
+}
+
+@Composable
+private fun InfoRow(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium
+        )
+    }
+}
+
+// Helper functions for content-specific actions
+private fun copyToClipboard(context: Context, text: String) {
+    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    val clip = ClipData.newPlainText("QR Code Content", text)
+    clipboard.setPrimaryClip(clip)
+}
+
+private fun shareContent(context: Context, text: String) {
+    val shareIntent = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_TEXT, text)
+    }
+    context.startActivity(Intent.createChooser(shareIntent, "Share via"))
+}
+
+private fun openUrl(context: Context, url: String) {
+    try {
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+        context.startActivity(intent)
+    } catch (e: Exception) {
+        Toast.makeText(context, "Cannot open URL", Toast.LENGTH_SHORT).show()
+    }
+}
+
+private fun sendEmail(context: Context, email: String) {
+    val emailAddress = if (email.startsWith("mailto:")) {
+        email.substring(7)
+    } else {
+        email
+    }
+
+    try {
+        val intent = Intent(Intent.ACTION_SENDTO).apply {
+            data = Uri.parse("mailto:$emailAddress")
+        }
+        context.startActivity(intent)
+    } catch (e: Exception) {
+        Toast.makeText(context, "No email app found", Toast.LENGTH_SHORT).show()
+    }
+}
+
+private fun dialPhone(context: Context, phone: String) {
+    val phoneNumber = if (phone.startsWith("tel:")) {
+        phone.substring(4)
+    } else {
+        phone
+    }
+
+    try {
+        val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:$phoneNumber"))
+        context.startActivity(intent)
+    } catch (e: Exception) {
+        Toast.makeText(context, "Cannot open dialer", Toast.LENGTH_SHORT).show()
+    }
+}
+
+private fun sendSms(context: Context, phone: String) {
+    val phoneNumber = phone.replace("sms:", "").replace("smsto:", "")
+
+    try {
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse("sms:$phoneNumber"))
+        context.startActivity(intent)
+    } catch (e: Exception) {
+        Toast.makeText(context, "Cannot open SMS app", Toast.LENGTH_SHORT).show()
+    }
+}
+
+private fun openMap(context: Context, geo: String) {
+    try {
+        val geoUri = if (geo.startsWith("geo:")) geo else "geo:$geo"
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(geoUri))
+        context.startActivity(intent)
+    } catch (e: Exception) {
+        Toast.makeText(context, "Cannot open maps", Toast.LENGTH_SHORT).show()
+    }
+}
+
+private fun addContact(context: Context, vcard: String) {
+    try {
+        val intent = Intent(Intent.ACTION_INSERT, android.provider.ContactsContract.Contacts.CONTENT_URI)
+        // Parse vCard and extract fields would go here
+        // For now, just show a toast
+        Toast.makeText(context, "Contact details copied", Toast.LENGTH_SHORT).show()
+        copyToClipboard(context, vcard)
+    } catch (e: Exception) {
+        Toast.makeText(context, "Cannot add contact", Toast.LENGTH_SHORT).show()
+    }
+}
+
+private fun addCalendarEvent(context: Context, vevent: String) {
+    try {
+        val intent = Intent(Intent.ACTION_INSERT, android.provider.CalendarContract.Events.CONTENT_URI)
+        // Parse vEvent and extract fields would go here
+        context.startActivity(intent)
+    } catch (e: Exception) {
+        Toast.makeText(context, "Cannot add calendar event", Toast.LENGTH_SHORT).show()
+    }
+}
+
+private fun searchProduct(context: Context, productCode: String) {
+    try {
+        val searchUrl = "https://www.google.com/search?q=$productCode"
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(searchUrl))
+        context.startActivity(intent)
+    } catch (e: Exception) {
+        Toast.makeText(context, "Cannot search product", Toast.LENGTH_SHORT).show()
+    }
+}
+
+private fun formatDate(timestamp: Long): String {
+    val sdf = SimpleDateFormat("MMM dd, yyyy 'at' HH:mm", Locale.getDefault())
+    return sdf.format(Date(timestamp))
+}
+
+private fun generateQRCode(content: String, format: com.appsease.qrbarcode.domain.models.BarcodeFormat): Bitmap? {
+    return try {
+        // Map domain BarcodeFormat to ZXing BarcodeFormat
+        val zxingFormat = when (format) {
+            com.appsease.qrbarcode.domain.models.BarcodeFormat.QR_CODE -> BarcodeFormat.QR_CODE
+            com.appsease.qrbarcode.domain.models.BarcodeFormat.CODE_128 -> BarcodeFormat.CODE_128
+            com.appsease.qrbarcode.domain.models.BarcodeFormat.CODE_39 -> BarcodeFormat.CODE_39
+            com.appsease.qrbarcode.domain.models.BarcodeFormat.EAN_13 -> BarcodeFormat.EAN_13
+            com.appsease.qrbarcode.domain.models.BarcodeFormat.EAN_8 -> BarcodeFormat.EAN_8
+            com.appsease.qrbarcode.domain.models.BarcodeFormat.UPC_A -> BarcodeFormat.UPC_A
+            com.appsease.qrbarcode.domain.models.BarcodeFormat.UPC_E -> BarcodeFormat.UPC_E
+            com.appsease.qrbarcode.domain.models.BarcodeFormat.DATA_MATRIX -> BarcodeFormat.DATA_MATRIX
+            com.appsease.qrbarcode.domain.models.BarcodeFormat.PDF417 -> BarcodeFormat.PDF_417
+            com.appsease.qrbarcode.domain.models.BarcodeFormat.AZTEC -> BarcodeFormat.AZTEC
+            com.appsease.qrbarcode.domain.models.BarcodeFormat.CODABAR -> BarcodeFormat.CODABAR
+            com.appsease.qrbarcode.domain.models.BarcodeFormat.ITF -> BarcodeFormat.ITF
+            com.appsease.qrbarcode.domain.models.BarcodeFormat.CODE_93 -> BarcodeFormat.CODE_93
+            com.appsease.qrbarcode.domain.models.BarcodeFormat.UNKNOWN -> BarcodeFormat.QR_CODE // Default to QR_CODE for unknown
+        }
+
+        val size = 512
+        val writer = MultiFormatWriter()
+        val bitMatrix: BitMatrix = writer.encode(content, zxingFormat, size, size)
+
+        val width = bitMatrix.width
+        val height = bitMatrix.height
+        val bitmap = createBitmap(width, height, Bitmap.Config.RGB_565)
+
+        for (x in 0 until width) {
+            for (y in 0 until height) {
+                bitmap[x, y] =
+                    if (bitMatrix[x, y]) android.graphics.Color.BLACK else android.graphics.Color.WHITE
+            }
+        }
+
+        bitmap
+    } catch (e: Exception) {
+        timber.log.Timber.tag("QC ScanDetailScree").e(e, "generateQRCode - Failed to generate QR code")
+        null
+    }
+}
