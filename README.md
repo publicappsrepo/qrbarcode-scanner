@@ -70,7 +70,7 @@ See [LICENSE](LICENSE) for full license text.
 ## 📧 Contact
 
 YOUR_NAME - appsease2001@gmail.com
-Project: [https://github.com/publicappsrepo/QR-Barcode-Scanner](https://github.com/publicappsrepo/QR-Barcode-Scanner)
+Project: [https://github.com/publicappsrepo/qrbarcode-scanner](https://github.com/publicappsrepo/qrbarcode-scanner)
 
 ---
 
